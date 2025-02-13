@@ -1,23 +1,47 @@
 ## Example Summary
 
-I2C Controller writes and reads multiple bytes to/from a target device.
-The example uses FIFO and polling. It can only handle a maximum of 4 bytes due to FIFO size.
-LED toggles if transmission and reception are successful.
-The Target device must be enabled and active before running this example.
-This example can be used to validate I2C communication, as a starting point to
-control any I2C target, or to create custom drivers.
+This is an update of TI AppNote SLAA208 for the MSPM0 series. 
+It provides a simple interface to read and write an SPI EEPROM, such as the M95P32.
 
-**Note**: Example requires Rev E3 or later of the MSPM0C1104 LaunchPad.
+The function signatures are (almost) the same as those in SLAA208. 
+The only visible difference from the AppNote is that InitSPI requires different arguments:
+1. a (configured) SPI device (SPI_Regs *)
+2. the GPIO port (GPIO_Regs *) for the Chip Select (/CS) pin
+3. the GPIO pin (GPIO_PIN_x) for the Chip Select (/CS) pin
+
+to communicate with the EEPROM. sysconfig can provide this; it will be named something similar to "SPI_1_INST".
+
+No error checking is performed, since SLAA208 did not provide for this.
+
+The code relies on DriverLib, but not sysconfig.
+
+Polling  (busy-waiting) is used rather than interrupts. This is because only sysconfig knows the ISR name. 
+Also, SPI rarely benefits from interrupts. 
+
+This was tested using a M95P32. This device uses a 3-byte address.
+To use a smaller device (shorter address) change the definitions of EEP_ADDRBITS and EEP_PAGESIZE accordingly.
+
+## DMA
+[Coming soon]
+
+If EEP_DMA=1, an alternate initialization InitSPI_DMA() may be called with an additional argument which is a DMA channel number.
+
+This channel should be configured in Sysconfig to use the (appropriate) SPI trigger. 
+Choose the DMA_I2Cn_TX_TRIG [sic] option, which actually refers to the DMA_TRIG1 publisher, not to anything about TX. 
+
+The other DMA channel configuration is overwritten.
 
 ## Peripherals & Pin Assignments
 
 | Peripheral | Pin | Function |
 | --- | --- | --- |
-| GPIOA | PA22 | Standard Output |
-| GPIOA | PA2 | Standard Output |
+| GPIOA | PA22 | Standard Output (LED) |
+| GPIOA | PA2 | Standard Output (scope probe point) |
 | SYSCTL |  |  |
-| I2C0 | PA0 | I2C Serial Data line (SDA) |
-| I2C0 | PA11 | I2C Serial Clock line (SCL) |
+| SPI0 | PA17 | SPI SCLK |
+| SPI0 | PA18 | SPI PICO (nee MOSI) |
+| SPI0 | PA16 | SPI POCI (nee MISO) |
+| GPIOA | PA4 | SPI /CS |
 | EVENT |  |  |
 | DEBUGSS | PA20 | Debug Clock |
 | DEBUGSS | PA19 | Debug Data In Out |
@@ -28,38 +52,23 @@ Visit [LP_MSPM0C1104](https://www.ti.com/tool/LP-MSPM0C1104) for LaunchPad infor
 
 | Pin | Peripheral | Function | LaunchPad Pin | LaunchPad Settings |
 | --- | --- | --- | --- | --- |
-| PA22 | GPIOA | PA22 | J1_8 | N/A |
-| PA2 | GPIOA | PA2 | J2_13 | N/A |
-| PA0 | I2C0 | SDA | J1_10 | <ul><li>PA0 is 5V tolerant open-drain so it requires pull-up<br><ul><li>`J20 1:2` Use 3.3V pull-up<br><li>`J20 2:3` Use 5V pull-up</ul></ul> |
-| PA11 | I2C0 | SCL | J1_9 | <ul><li>PA11 can be connected to an external 3.3V pull-up<br><ul><li>`J6 OFF` Disconnect 3.3V pull-up<br><li>`J6 ON` Connect 3.3V pull-up</ul></ul> |
+| PA22 | GPIOA | PA22    | J1_8  | N/A |
+| PA2  | GPIOA | PA2     | J2_13 | N/A |
+| PA17 | SPI   | SCLK    | J2_18 |
+| PA18 | SPI0  | PICO    | J2_15 |
+| PA16 | SPI0  | POCI    | J2_19 |
+| GPIOA | PA4  | SPI /CS | J2_14 |
 | PA20 | DEBUGSS | SWCLK | J2_11 | <ul><li>PA20 is used by SWD during debugging<br><ul><li>`J101 13:14 ON` Connect to XDS-110 SWCLK while debugging<br><li>`J101 13:14 OFF` Disconnect from XDS-110 SWCLK if using pin in application</ul></ul> |
 | PA19 | DEBUGSS | SWDIO | J2_17 | <ul><li>PA19 is used by SWD during debugging<br><ul><li>`J101 11:12 ON` Connect to XDS-110 SWDIO while debugging<br><li>`J101 11:12 OFF` Disconnect from XDS-110 SWDIO if using pin in application</ul></ul> |
 
 ### Device Migration Recommendations
-This project was developed for a superset device included in the LP_MSPM0C1104 LaunchPad. Please
-visit the [CCS User's Guide](https://software-dl.ti.com/msp430/esd/MSPM0-SDK/latest/docs/english/tools/ccs_ide_guide/doc_guide/doc_guide-srcs/ccs_ide_guide.html#sysconfig-project-migration)
-for information about migrating to other MSPM0 devices.
-
-### Low-Power Recommendations
-TI recommends to terminate unused pins by setting the corresponding functions to
-GPIO and configure the pins to output low or input with internal
-pullup/pulldown resistor.
-
-SysConfig allows developers to easily configure unused pins by selecting **Board**→**Configure Unused Pins**.
-
-For more information about jumper configuration to achieve low-power using the
-MSPM0 LaunchPad, please visit the [LP-MSPM0C1104 User's Guide](https://www.ti.com/lit/slau908).
+Except for DMA, the features used are available on any MSPM0 device.
+Porting (migration) to other devices can (in theory) be done using Sysconfig.
 
 ## Example Usage
+Connect a suitable SPI EEPROM device as above. 
+Be sure  /WP and /HOLD are pulled high.
 
-Connect SDA and SCL between I2C Controller and Target.
-Note that I2C requires pull-up resistors. Internal pull-ups can be enabled in
-SysConfig (see datasheet for resistance specification), but external pull-ups
-might be required based on I2C speed and capacitance. External pull-ups can be
-connected or enabled using the LaunchPad.
 Compile, load and run the example.
-LED1 will toggle periodically if transmission and reception were successful.
-LED1 will remain off if there is a problem during initialization.
-LED1 will remain on if there is a problem during data transfers.
-USER_TEST_PIN GPIO will mimic the behavior of the LED pin on the BoosterPack
-header and can be used to verify the LED behavior.
+
+LED1 and the USER_TEST_PIN will go high at the end.
