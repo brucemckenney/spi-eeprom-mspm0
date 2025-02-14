@@ -1,6 +1,6 @@
 ///
 //  i2c-eeprom.c
-//  SLAA208 updated for the MSPM0
+//  SLAA208 updated for the MSPM0 and SPI
 //  Copyright Bruce McKenney 2025
 //  BSD 2-clause license
 //
@@ -12,13 +12,14 @@
 
 #include "spi-eeprom.h"
 
-
+//  SPI commands. Pretty much everyone supports this subset.
 #define EEP_READ    0x03
 #define EEP_WRITE   0x02
 #define EEP_WREN    0x06
 #define EEP_RDSR    0x05
 
-#define EEP_RDSR_WIP 0x01
+//  SR bits
+#define EEP_RDSR_WIP 0x01   // Write In Progress
 
 ///
 //  eep_param block
@@ -29,8 +30,8 @@ typedef struct _eep_params
 {
     SPI_Regs *ep_spi;
     GPIO_Regs *ep_cs_port;  // PORTA, e.g.
-    unsigned ep_cs_pin;
-    eep_addr ep_curr_addr;
+    unsigned ep_cs_pin;     // GPIO_PIN_4, e.g.
+    eep_addr ep_curr_addr;  // Pretend we can do EEPROM_ReadCurrent()
 #if EEP_DMA
     uint8_t ep_dma_chanid;
 #endif // EEP_DMA
@@ -41,7 +42,7 @@ eep_params * const eep = &eep_param;
 ///
 //  InitSPI()
 //  spidev should point to a configured SPI unit, e.g. from sysconfig.
-//  eeprom_cs is 32 bits: 00pp00bb, where pp=port index (PORTA=0) and bb is pin bit number.
+//  cs_port:cs_pin describes /CS
 //
 void
 InitSPI(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin)
@@ -57,6 +58,9 @@ InitSPI(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin)
 }
 
 #if EEP_DMA
+///
+//  InitSPI_DMA()
+//  Same as above, plus a DMA channel.
 void
 InitSPI_DMA(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin, uint8_t chanid)
 {
@@ -75,6 +79,10 @@ InitSPI_DMA(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin, uint8_t chani
 }
 #endif // EEP_DMA
 
+//
+//  EEPROM_spix()
+//  Exchange one Tx byte for one Rx byte.
+//
 static inline uint8_t
 EEPROM_spix(SPI_Regs *spi, uint8_t c)
 {
@@ -83,18 +91,28 @@ EEPROM_spix(SPI_Regs *spi, uint8_t c)
     return(c);
 }
 
+///
+//  EEPROM_cs_on()
+//  Assert /CS
+//
 static inline void
 EEPROM_cs_on(void)
 {
     DL_GPIO_clearPins(eep->ep_cs_port, eep->ep_cs_pin);
     return;
 }
+
+///
+//  EEPROM_cs_off()
+//  De-assert /CS
+//
 static inline void
 EEPROM_cs_off(void)
 {
     DL_GPIO_setPins(eep->ep_cs_port, eep->ep_cs_pin);
     return;
 }
+
 ///
 //  EEPROM_SetAddr()
 //  Shorthand: Stuff the EEPROM memory address into the Tx FIFO as a prefix
@@ -169,11 +187,12 @@ EEPROM_PageWrite(unsigned int Address , unsigned char * Data , unsigned int Size
             fragsiz = cnt;
         fragcnt = fragsiz;              // Prepare to count
 
+        // WRite ENable
         EEPROM_cs_on();
         EEPROM_spix(spi, EEP_WREN);
         EEPROM_cs_off();
 
-        //  Stuff the EEPROM memory address into the Tx FIFO as a prefix
+        //  Send a Write command, followed by the memory address.
         EEPROM_cs_on();
         EEPROM_spix(spi, EEP_WRITE);
         EEPROM_SetAddr(spi, addr);
@@ -189,7 +208,7 @@ EEPROM_PageWrite(unsigned int Address , unsigned char * Data , unsigned int Size
 #endif // EEP_DMA
         while (fragcnt > 0)
         {
-            EEPROM_spix(spi, *ptr);
+            (void)EEPROM_spix(spi, *ptr);
             ++ptr;
             --fragcnt;
         }
@@ -204,7 +223,7 @@ EEPROM_PageWrite(unsigned int Address , unsigned char * Data , unsigned int Size
         }
 #endif // EEP_DMA
 
-        // Wait for EEPROM update to complete (Twr)
+        // Wait for EEPROM update to complete (Twr/Tpp)
         EEPROM_AckPolling();
     } // while (cnt > 0)
     eep->ep_curr_addr = addr;
@@ -258,7 +277,7 @@ EEPROM_SequentialRead(unsigned int Address , unsigned char * Data , unsigned int
 #endif // EEP_DMA
     unsigned i;
 
-    // Insert the address in the Tx FIFO as a prefix
+    //  Send a Read command, followed by the memory address.
     EEPROM_cs_on();
     EEPROM_spix(spi, EEP_READ);
     EEPROM_SetAddr(spi, Address);
@@ -298,7 +317,7 @@ EEPROM_SequentialRead(unsigned int Address , unsigned char * Data , unsigned int
 ///
 //  EEPROM_AckPolling()
 //  The EEPROM doesn't respond to much while it's writing its memory
-//  (Twr, typically <5ms), so just keep poking it until it WIP=0.
+//  (Twr, typically <5ms), so just keep poking it until WIP=0.
 //
 void
 EEPROM_AckPolling(void)
@@ -309,11 +328,11 @@ EEPROM_AckPolling(void)
     {
         uint8_t sr;
         EEPROM_cs_on();
-        (void)EEPROM_spix(spi, EEP_RDSR);
+        (void)EEPROM_spix(spi, EEP_RDSR);       // Read Status Register
         sr = EEPROM_spix(spi, 0xFF);
         EEPROM_cs_off();
         if ((sr & EEP_RDSR_WIP) == 0)
-            {OK = 1;}                                           // No error -> OK
+            {OK = 1;}                           // WIP=0 -> OK
     } while (!OK);
 
     return;
