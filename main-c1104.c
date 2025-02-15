@@ -23,7 +23,7 @@ main(void)
                   GPIO_LEDS_USER_LED_1_PIN | GPIO_LEDS_USER_TEST_PIN);
 #if EEP_DMA
   // We picked CH0 in Sysconfig
-  InitSPI_DMA(SPI_0_INST, CS_PORT, CS_PIN_0_PIN, DMA_CH0_CHAN_ID);          // Initialize I2C module
+  InitSPI_DMA(SPI_0_INST, CS_PORT, CS_PIN_0_PIN, DMA_CH1_CHAN_ID, DMA_CH0_CHAN_ID); // Initialize I2C module
 #else
   InitSPI(SPI_0_INST, CS_PORT, CS_PIN_0_PIN);          // Initialize SPI module
 #endif // EEP_DMA

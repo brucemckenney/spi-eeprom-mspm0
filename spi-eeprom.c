@@ -295,6 +295,7 @@ EEPROM_PageWrite(unsigned int Address , unsigned char * Data , unsigned int Size
 
         addr += fragsiz;
         addr &= EEP_ADDRMASK;
+        ptr += fragsiz;
         cnt -= fragsiz;
 
         // Wait for EEPROM update to complete (Twr/Tpp)
