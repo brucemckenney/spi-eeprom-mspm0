@@ -13,21 +13,18 @@ to communicate with the EEPROM. sysconfig can provide this; it will be named som
 
 No error checking is performed, since SLAA208 did not provide for this.
 
-The code relies on DriverLib, but not sysconfig.
+The code relies on DriverLib, but not sysconfig. All the driverlib-related configuration is passed in.
 
 Polling  (busy-waiting) is used rather than interrupts. This is because only sysconfig knows the ISR name. 
 Also, SPI rarely benefits from interrupts. 
 
-This was tested using a M95P32 and an MB85RS1 (FRAM). These devices use a 3-byte address.
+This was tested using a M95P32 (EEPROM) and an MB85RS1 (FRAM). These devices use a 3-byte address.
 To use a smaller device (shorter address) change the definitions of EEP_ADDRBITS and EEP_PAGESIZE accordingly.
 
 ## DMA
-[Coming soon]
+If EEP_DMA=1, an alternate initialization InitSPI_DMA() may be called with two additional arguments: the Rx/Tx DMA channel numbers. 
 
-If EEP_DMA=1, an alternate initialization InitSPI_DMA() may be called with an additional argument which is a DMA channel number.
-
-This channel should be configured in Sysconfig to use the (appropriate) SPI trigger. 
-Choose the DMA_I2Cn_TX_TRIG [sic] option, which actually refers to the DMA_TRIG1 publisher, not to anything about TX. 
+These channels should be configured in Sysconfig to use the appropriate SPI triggers. (The SPI DMA publishers are specialized.)
 
 The other DMA channel configuration is overwritten.
 
@@ -64,6 +61,9 @@ Visit [LP_MSPM0C1104](https://www.ti.com/tool/LP-MSPM0C1104) for LaunchPad infor
 ### Device Migration Recommendations
 Except for DMA, the features used are available on any MSPM0 device.
 Porting (migration) to other devices can (in theory) be done using Sysconfig.
+
+Truth be known: I've never succeeded in using Sysconfig to "migrate" a project to a different device.
+The anticipated usage here is to copy spi-eeprom.[ch] into your own project (using main-X.c as a guide).
 
 ## Example Usage
 Connect a suitable SPI EEPROM device as above. 
