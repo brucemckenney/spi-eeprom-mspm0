@@ -29,15 +29,20 @@
 typedef struct _eep_params
 {
     SPI_Regs *ep_spi;
-    GPIO_Regs *ep_cs_port;  // PORTA, e.g.
-    unsigned ep_cs_pin;     // GPIO_PIN_4, e.g.
-    eep_addr ep_curr_addr;  // Pretend we can do EEPROM_ReadCurrent()
+    GPIO_Regs *ep_cs_port;      // PORTA, e.g.
+    unsigned ep_cs_pin;         // GPIO_PIN_4, e.g.
+    unsigned ep_curr_addr;      // Pretend we can do EEPROM_ReadCurrent()
 #if EEP_DMA
-    uint8_t ep_dma_chanid;
+    uint8_t ep_use_dma;         // Shorthand
+    uint8_t ep_dma_rx_chanid;   // DMA Provider 1
+    uint8_t ep_dma_tx_chanid;   // DMA Provider 2
 #endif // EEP_DMA
 }eep_params;
 eep_params eep_param;
 eep_params * const eep = &eep_param;
+
+//  Infinite source (Tx) and infinite sink (Rx)
+static uint8_t eep_tx_inf = 0xFF, eep_rx_inf = 0xff;
 
 ///
 //  InitSPI()
@@ -51,7 +56,9 @@ InitSPI(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin)
     eep->ep_cs_pin = cs_pin;
     eep->ep_cs_port = cs_port;
 #if EEP_DMA
-    eep->ep_dma_chanid = EEP_DMA_NOCHAN;
+    eep->ep_use_dma = 0;
+    eep->ep_dma_rx_chanid =
+            eep->ep_dma_tx_chanid = EEP_DMA_NOCHAN;
 #endif // EEP_DMA
 
     return;
@@ -62,18 +69,38 @@ InitSPI(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin)
 //  InitSPI_DMA()
 //  Same as above, plus a DMA channel.
 void
-InitSPI_DMA(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin, uint8_t chanid)
+InitSPI_DMA(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin, uint8_t rx_chanid, uint8_t tx_chanid)
 {
     eep->ep_spi = spidev;
     eep->ep_cs_pin = cs_pin;
     eep->ep_cs_port = cs_port;
-    eep->ep_dma_chanid = chanid;
-    if (chanid != EEP_DMA_NOCHAN)
+    //  Caller needs to specify both DMA channels or neither
+    if (rx_chanid != EEP_DMA_NOCHAN && tx_chanid != EEP_DMA_NOCHAN)
+    {
+        eep->ep_use_dma = 1;
+    }
+    else
+    {
+        eep->ep_use_dma = 0;
+        rx_chanid = EEP_DMA_NOCHAN;
+        tx_chanid = EEP_DMA_NOCHAN;
+    }
+    eep->ep_dma_rx_chanid = rx_chanid;
+    eep->ep_dma_tx_chanid = tx_chanid;
+#if 0   // This seemed necessary at one time
+    if (rx_chanid != EEP_DMA_NOCHAN)
     {
         // Clear out whatever Sysconfig set
-        DL_I2C_disableDMAEvent(i2c, DL_I2C_EVENT_ROUTE_1,    // DMA_TRIG1
+        DL_I2C_disableDMAEvent(spidev, DL_I2C_EVENT_ROUTE_1,    // DMA_TRIG1
                            (DL_I2C_DMA_INTERRUPT_TARGET_RXFIFO_TRIGGER|DL_I2C_DMA_INTERRUPT_TARGET_RXFIFO_TRIGGER));
     }
+    if (tx_chanid != EEP_DMA_NOCHAN)
+    {
+        // Clear out whatever Sysconfig set
+        DL_I2C_disableDMAEvent(spidev, DL_I2C_EVENT_ROUTE_2,    // DMA_TRIG2
+                           (DL_I2C_DMA_INTERRUPT_TARGET_RXFIFO_TRIGGER|DL_I2C_DMA_INTERRUPT_TARGET_RXFIFO_TRIGGER));
+    }
+#endif
 
     return;
 }
@@ -132,6 +159,84 @@ EEPROM_SetAddr(SPI_Regs *spi, unsigned int addr)
     return;
 }
 
+void
+EEPROM_spi_burst(SPI_Regs *spi, unsigned char *src, unsigned char *dst, unsigned cnt)
+{
+    unsigned txincr = 1, rxincr = 1;
+
+    if (src == 0)
+    {
+        src = &eep_tx_inf;
+        txincr = 0;
+    }
+    if (dst == 0)
+    {
+        dst = &eep_rx_inf;
+        rxincr = 0;
+    }
+#if EEP_DMA
+    if (eep->ep_use_dma)
+    {
+        //  This code looks bulky, but it distills to not much.
+        uint8_t rxchan = eep->ep_dma_rx_chanid;
+        uint8_t txchan = eep->ep_dma_tx_chanid;
+        uint32_t incr;
+
+        //  Tx side:
+        DL_DMA_setDestAddr(DMA, txchan, (uint32_t)&spi->TXDATA);
+        DL_DMA_setSrcAddr(DMA, txchan, (uint32_t)src);
+        DL_DMA_setTransferSize(DMA, txchan, cnt);
+        if (txincr)
+            incr = DL_DMA_ADDR_INCREMENT;
+        else
+            incr = DL_DMA_ADDR_UNCHANGED;
+        DL_DMA_configTransfer(DMA, txchan,
+                          DL_DMA_SINGLE_TRANSFER_MODE, DL_DMA_NORMAL_MODE,
+                          DL_DMA_WIDTH_BYTE, DL_DMA_WIDTH_BYTE,
+                          incr, DL_DMA_ADDR_UNCHANGED);         // Don't incr dest
+        DL_SPI_clearDMATransmitEventStatus(spi);                // Clear stale
+        DL_SPI_enableDMATransmitEvent(spi);                     // SPI_DMA_TRIG_TX_IMASK_TX_SET
+
+        //  Rx side:
+        DL_DMA_setDestAddr(DMA, rxchan, (uint32_t)dst);
+        DL_DMA_setSrcAddr(DMA, rxchan, (uint32_t)&spi->RXDATA);
+        DL_DMA_setTransferSize(DMA, rxchan, cnt);
+        if (rxincr)
+            incr = DL_DMA_ADDR_INCREMENT;
+        else
+            incr = DL_DMA_ADDR_UNCHANGED;
+        DL_DMA_configTransfer(DMA, rxchan,
+                              DL_DMA_SINGLE_TRANSFER_MODE, DL_DMA_NORMAL_MODE,
+                              DL_DMA_WIDTH_BYTE, DL_DMA_WIDTH_BYTE,
+                              DL_DMA_ADDR_UNCHANGED,  incr);    // don't incr src
+        DL_SPI_clearDMAReceiveEventStatus(spi, DL_SPI_DMA_INTERRUPT_RX);    // Clear stale
+        DL_SPI_enableDMAReceiveEvent(spi, DL_SPI_DMA_INTERRUPT_RX);
+
+        //  Run the DMA for this burst
+        DL_SPI_clearInterruptStatus(spi, DL_SPI_INTERRUPT_DMA_DONE_RX); // Clear termination event
+        DL_DMA_enableChannel(DMA, rxchan); // Prime
+        DL_DMA_enableChannel(DMA, txchan); // Go
+
+        while (!DL_SPI_getRawInterruptStatus(spi, DL_SPI_INTERRUPT_DMA_DONE_RX)) {/*EMPTY*/;}
+    }
+    else
+    {
+
+#else // EEP_DMA
+    while (cnt > 0)
+    {
+        *dst = EEPROM_spix(spi, *src);
+        src += txincr;
+        dst += rxincr;
+        --cnt;
+    }
+#endif // EEP_DMA
+#if EEP_DMA
+    } // end if(use_dma)
+#endif // EEP_DMA
+
+    return;
+}
 
 ///
 //  EEPROM_ByteWrite()
@@ -155,34 +260,20 @@ void
 EEPROM_PageWrite(unsigned int Address , unsigned char * Data , unsigned int Size)
 {
     SPI_Regs *spi = eep->ep_spi;
-#if EEP_DMA
-    uint8_t dmachan = eep->ep_dma_chanid;
-#endif // EEP_DMA
-
     unsigned cnt = Size;
     unsigned char *ptr = Data;
-    eep_addr addr = (eep_addr)Address;  // Wrap address as needed
+    unsigned addr = Address & EEP_ADDRMASK;  // Wrap address as needed
 
-#if EEP_DMA
-    if (dmachan != EEP_DMA_NOCHAN)
-    {
-        DL_DMA_setDestAddr(DMA, dmachan, (uint32_t)&i2c->MASTER.MTXDATA);
-        DL_I2C_enableDMAEvent(i2c, DL_I2C_EVENT_ROUTE_1, DL_I2C_DMA_INTERRUPT_CONTROLLER_TXFIFO_TRIGGER); // DMA_TRIG1
-        DL_DMA_configTransfer(DMA, dmachan,
-                              DL_DMA_SINGLE_TRANSFER_MODE, DL_DMA_NORMAL_MODE,
-                              DL_DMA_WIDTH_BYTE, DL_DMA_WIDTH_BYTE,
-                              DL_DMA_ADDR_INCREMENT, DL_DMA_ADDR_UNCHANGED);// inc src, not dest
-   }
-#endif // EEP_DMA
     //  Fill pages until we run out of data.
     while (cnt > 0)
     {
         unsigned fragsiz, fragcnt;
-        eep_addr pagetop;
+        unsigned pagetop;
 
         //  See how much can fit into the requested page
         pagetop = (addr + EEP_PAGESIZE) & ~(EEP_PAGESIZE-1); // addr of next page
         fragsiz = pagetop - addr;       // Amount that can fit in this page
+        fragsiz &= EEP_ADDRMASK;
         if (fragsiz > cnt)              // Don't go overboard
             fragsiz = cnt;
         fragcnt = fragsiz;              // Prepare to count
@@ -197,44 +288,20 @@ EEPROM_PageWrite(unsigned int Address , unsigned char * Data , unsigned int Size
         EEPROM_spix(spi, EEP_WRITE);
         EEPROM_SetAddr(spi, addr);
 
-#if EEP_DMA
-        if (dmachan != EEP_DMA_NOCHAN)
-        {
-            DL_DMA_setSrcAddr(DMA, dmachan, (uint32_t)ptr);
-            DL_DMA_setTransferSize(DMA, dmachan, fragsiz); // don't count what's already in the FIFO
-            DL_I2C_clearDMAEvent(i2c, DL_I2C_EVENT_ROUTE_1, DL_I2C_DMA_INTERRUPT_CONTROLLER_TXFIFO_TRIGGER);
-            DL_DMA_enableChannel(DMA, dmachan); // Prime
-        }
-#endif // EEP_DMA
-        while (fragcnt > 0)
-        {
-            (void)EEPROM_spix(spi, *ptr);
-            ++ptr;
-            --fragcnt;
-        }
+        //  Do the main work
+        EEPROM_spi_burst(spi, ptr, 0, fragsiz);
+
         EEPROM_cs_off();
 
         addr += fragsiz;
+        addr &= EEP_ADDRMASK;
         cnt -= fragsiz;
-#if EEP_DMA
-        if (dmachan != EEP_DMA_NOCHAN)
-        {
-            ptr += fragsiz;
-        }
-#endif // EEP_DMA
 
         // Wait for EEPROM update to complete (Twr/Tpp)
         EEPROM_AckPolling();
     } // while (cnt > 0)
-    eep->ep_curr_addr = addr;
 
-    //  Only needed in case of an error
-#if EEP_DMA
-    if (dmachan != EEP_DMA_NOCHAN)
-    {
-        DL_DMA_disableChannel(DMA, dmachan);
-    }
-#endif // EEP_DMA
+    eep->ep_curr_addr = addr;
 
     return;
 }
@@ -272,9 +339,6 @@ void
 EEPROM_SequentialRead(unsigned int Address , unsigned char * Data , unsigned int Size)
 {
     SPI_Regs *spi = eep->ep_spi;
-#if EEP_DMA
-    uint8_t dmachan = eep->ep_dma_chanid;
-#endif // EEP_DMA
     unsigned i;
 
     //  Send a Read command, followed by the memory address.
@@ -282,34 +346,11 @@ EEPROM_SequentialRead(unsigned int Address , unsigned char * Data , unsigned int
     EEPROM_spix(spi, EEP_READ);
     EEPROM_SetAddr(spi, Address);
 
-#if EEP_DMA
-    if (dmachan != EEP_DMA_NOCHAN)
-    {
-        DL_DMA_setSrcAddr(DMA, dmachan, (uint32_t)&i2c->MASTER.MRXDATA);
-        DL_DMA_setDestAddr(DMA, dmachan, (uint32_t)Data);
-        DL_DMA_setTransferSize(DMA, dmachan, Size); // don't count what's in the Tx FIFO
-        DL_DMA_configTransfer(DMA, dmachan,
-                              DL_DMA_SINGLE_TRANSFER_MODE, DL_DMA_NORMAL_MODE,
-                              DL_DMA_WIDTH_BYTE, DL_DMA_WIDTH_BYTE,
-                              DL_DMA_ADDR_UNCHANGED,  DL_DMA_ADDR_INCREMENT);// inc dest, not src
-        DL_I2C_clearDMAEvent(i2c, DL_I2C_EVENT_ROUTE_1, DL_I2C_DMA_INTERRUPT_CONTROLLER_RXFIFO_TRIGGER);
-        DL_I2C_enableDMAEvent(i2c, DL_I2C_EVENT_ROUTE_1, DL_I2C_DMA_INTERRUPT_CONTROLLER_RXFIFO_TRIGGER);
-        DL_DMA_enableChannel(DMA, dmachan); // Prime
-    }
-#endif // EEP_DMA
+    //  Do the main work
+    EEPROM_spi_burst(spi, 0, Data, Size);
 
-    for (i = 0 ; i < Size ; ++i)
-    {
-        Data[i] = EEPROM_spix(spi, 0xFF);
-    }
     EEPROM_cs_off();
-    eep->ep_curr_addr = Address + Size;
-#if EEP_DMA
-    if (dmachan != EEP_DMA_NOCHAN)
-    {
-        DL_DMA_disableChannel(DMA, dmachan);
-    }
-#endif // EEP_DMA
+    eep->ep_curr_addr = (Address + Size) & EEP_ADDRMASK;
 
     return;
 }

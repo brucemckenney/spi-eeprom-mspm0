@@ -18,7 +18,7 @@ The code relies on DriverLib, but not sysconfig.
 Polling  (busy-waiting) is used rather than interrupts. This is because only sysconfig knows the ISR name. 
 Also, SPI rarely benefits from interrupts. 
 
-This was tested using a M95P32. This device uses a 3-byte address.
+This was tested using a M95P32 and an MB85RS1 (FRAM). These devices use a 3-byte address.
 To use a smaller device (shorter address) change the definitions of EEP_ADDRBITS and EEP_PAGESIZE accordingly.
 
 ## DMA

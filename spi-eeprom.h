@@ -10,8 +10,9 @@
 #include <stdint.h>
 
 #define EEP_ADDRBITS   24
+#define EEP_ADDRMASK    ((1ul << EEP_ADDRBITS)-1)  // for bits=32, this over-shifts but the result is correct
 
-typedef uint32_t eep_addr;          // 24-bit addresses
+//typedef uint32_t eep_addr;          // 24-bit addresses
 #define EEP_PAGESIZE    16          // Page size (from the data sheet); power of 2
 #define EEP_DMA         0
 
@@ -23,7 +24,7 @@ extern unsigned char EEPROM_CurrentAddressRead(void);
 extern void EEPROM_SequentialRead(unsigned int Address , unsigned char * Data , unsigned int Size);
 extern void EEPROM_AckPolling(void);
 #if EEP_DMA
-extern void InitSPI_DMA(SPI_Regs *spidev,  GPIO_Regs *cs_port, unsigned cs_pin, uint8_t chanid);
+extern void InitSPI_DMA(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin, uint8_t rx_chanid, uint8_t tx_chanid);
 #define EEP_DMA_NOCHAN  ((uint8_t)-1)
 #endif // EEP_DMA
 
