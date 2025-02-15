@@ -1,5 +1,6 @@
 ///
-//  i2c-eeprom.c
+//  spi-eeprom.c
+//  Rev 0.1.0
 //  SLAA208 updated for the MSPM0 and SPI
 //  Copyright Bruce McKenney 2025
 //  BSD 2-clause license
