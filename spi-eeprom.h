@@ -1,6 +1,6 @@
 //
 //  spi-eeprom.h
-//  Rev 0.1.0
+//  Rev 0.1.1
 //  SLAA208 updated for the MSPM0 and SPI
 //  Copyright Bruce McKenney 2025
 //  BSD 2-Clause license
@@ -13,7 +13,6 @@
 #define EEP_ADDRBITS   24
 #define EEP_ADDRMASK    ((1ul << EEP_ADDRBITS)-1)  // for bits=32, this over-shifts but the result is correct
 
-//typedef uint32_t eep_addr;          // 24-bit addresses
 #define EEP_PAGESIZE    16          // Page size (from the data sheet); power of 2
 #define EEP_DMA         0
 

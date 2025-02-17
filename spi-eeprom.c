@@ -1,6 +1,6 @@
 ///
 //  spi-eeprom.c
-//  Rev 0.1.0
+//  Rev 0.1.1
 //  SLAA208 updated for the MSPM0 and SPI
 //  Copyright Bruce McKenney 2025
 //  BSD 2-clause license
@@ -70,15 +70,18 @@ InitSPI(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin)
 //  InitSPI_DMA()
 //  Same as above, plus a DMA channel.
 void
-InitSPI_DMA(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin, uint8_t rx_chanid, uint8_t tx_chanid)
+InitSPI_DMA(SPI_Regs *spi, GPIO_Regs *cs_port, unsigned cs_pin, uint8_t rx_chanid, uint8_t tx_chanid)
 {
-    eep->ep_spi = spidev;
+    eep->ep_spi = spi;
     eep->ep_cs_pin = cs_pin;
     eep->ep_cs_port = cs_port;
     //  Caller needs to specify both DMA channels or neither
     if (rx_chanid != EEP_DMA_NOCHAN && tx_chanid != EEP_DMA_NOCHAN)
     {
         eep->ep_use_dma = 1;
+        //  Constant settings:
+        DL_DMA_setDestAddr(DMA, tx_chanid, (uint32_t)&spi->TXDATA);
+        DL_DMA_setSrcAddr(DMA, rx_chanid, (uint32_t)&spi->RXDATA);
     }
     else
     {
@@ -88,20 +91,6 @@ InitSPI_DMA(SPI_Regs *spidev, GPIO_Regs *cs_port, unsigned cs_pin, uint8_t rx_ch
     }
     eep->ep_dma_rx_chanid = rx_chanid;
     eep->ep_dma_tx_chanid = tx_chanid;
-#if 0   // This seemed necessary at one time
-    if (rx_chanid != EEP_DMA_NOCHAN)
-    {
-        // Clear out whatever Sysconfig set
-        DL_I2C_disableDMAEvent(spidev, DL_I2C_EVENT_ROUTE_1,    // DMA_TRIG1
-                           (DL_I2C_DMA_INTERRUPT_TARGET_RXFIFO_TRIGGER|DL_I2C_DMA_INTERRUPT_TARGET_RXFIFO_TRIGGER));
-    }
-    if (tx_chanid != EEP_DMA_NOCHAN)
-    {
-        // Clear out whatever Sysconfig set
-        DL_I2C_disableDMAEvent(spidev, DL_I2C_EVENT_ROUTE_2,    // DMA_TRIG2
-                           (DL_I2C_DMA_INTERRUPT_TARGET_RXFIFO_TRIGGER|DL_I2C_DMA_INTERRUPT_TARGET_RXFIFO_TRIGGER));
-    }
-#endif
 
     return;
 }
@@ -143,7 +132,7 @@ EEPROM_cs_off(void)
 
 ///
 //  EEPROM_SetAddr()
-//  Shorthand: Stuff the EEPROM memory address into the Tx FIFO as a prefix
+//  Shorthand: Write the EEPROM memory address as a prefix
 //
 static inline void
 EEPROM_SetAddr(SPI_Regs *spi, unsigned int addr)
@@ -160,6 +149,9 @@ EEPROM_SetAddr(SPI_Regs *spi, unsigned int addr)
     return;
 }
 
+///
+//  EEPROM_spi_burst()
+//
 void
 EEPROM_spi_burst(SPI_Regs *spi, unsigned char *src, unsigned char *dst, unsigned cnt)
 {
@@ -184,13 +176,9 @@ EEPROM_spi_burst(SPI_Regs *spi, unsigned char *src, unsigned char *dst, unsigned
         uint32_t incr;
 
         //  Tx side:
-        DL_DMA_setDestAddr(DMA, txchan, (uint32_t)&spi->TXDATA);
         DL_DMA_setSrcAddr(DMA, txchan, (uint32_t)src);
         DL_DMA_setTransferSize(DMA, txchan, cnt);
-        if (txincr)
-            incr = DL_DMA_ADDR_INCREMENT;
-        else
-            incr = DL_DMA_ADDR_UNCHANGED;
+        incr = (txincr == 0) ? DL_DMA_ADDR_UNCHANGED : DL_DMA_ADDR_INCREMENT;
         DL_DMA_configTransfer(DMA, txchan,
                           DL_DMA_SINGLE_TRANSFER_MODE, DL_DMA_NORMAL_MODE,
                           DL_DMA_WIDTH_BYTE, DL_DMA_WIDTH_BYTE,
@@ -200,12 +188,8 @@ EEPROM_spi_burst(SPI_Regs *spi, unsigned char *src, unsigned char *dst, unsigned
 
         //  Rx side:
         DL_DMA_setDestAddr(DMA, rxchan, (uint32_t)dst);
-        DL_DMA_setSrcAddr(DMA, rxchan, (uint32_t)&spi->RXDATA);
         DL_DMA_setTransferSize(DMA, rxchan, cnt);
-        if (rxincr)
-            incr = DL_DMA_ADDR_INCREMENT;
-        else
-            incr = DL_DMA_ADDR_UNCHANGED;
+        incr = (rxincr == 0) ? DL_DMA_ADDR_UNCHANGED : DL_DMA_ADDR_INCREMENT;
         DL_DMA_configTransfer(DMA, rxchan,
                               DL_DMA_SINGLE_TRANSFER_MODE, DL_DMA_NORMAL_MODE,
                               DL_DMA_WIDTH_BYTE, DL_DMA_WIDTH_BYTE,
@@ -224,6 +208,7 @@ EEPROM_spi_burst(SPI_Regs *spi, unsigned char *src, unsigned char *dst, unsigned
     {
 
 #else // EEP_DMA
+    //  Byte-by-byte
     while (cnt > 0)
     {
         *dst = EEPROM_spix(spi, *src);
@@ -268,7 +253,7 @@ EEPROM_PageWrite(unsigned int Address , unsigned char * Data , unsigned int Size
     //  Fill pages until we run out of data.
     while (cnt > 0)
     {
-        unsigned fragsiz, fragcnt;
+        unsigned fragsiz;
         unsigned pagetop;
 
         //  See how much can fit into the requested page
@@ -277,7 +262,6 @@ EEPROM_PageWrite(unsigned int Address , unsigned char * Data , unsigned int Size
         fragsiz &= EEP_ADDRMASK;
         if (fragsiz > cnt)              // Don't go overboard
             fragsiz = cnt;
-        fragcnt = fragsiz;              // Prepare to count
 
         // WRite ENable
         EEPROM_cs_on();
@@ -303,7 +287,7 @@ EEPROM_PageWrite(unsigned int Address , unsigned char * Data , unsigned int Size
         EEPROM_AckPolling();
     } // while (cnt > 0)
 
-    eep->ep_curr_addr = addr;
+    eep->ep_curr_addr = addr;   // Save for CurrentAddressRead()
 
     return;
 }
